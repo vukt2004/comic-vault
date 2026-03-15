@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -18,14 +18,22 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QTextEdit,
+    QInputDialog,
     QVBoxLayout,
     QWidget,
-    QComboBox,
 )
+from sqlmodel import select
 
+from comic_vault.data.covers import delete_managed_cover, import_cover, save_cover_image
 from comic_vault.data.db import get_session
 from comic_vault.data.models import Series
+from comic_vault.data.storage import resolve_app_path
+from comic_vault.data.validation import normalize_url
+from comic_vault.ui.utils.browser import open_url, open_url_private
+from comic_vault.ui.utils.remote_image import RemoteImageLoader, RemoteImageResult
+from comic_vault.ui.utils.web_cover import CoverResult, WebCoverResolver
 from comic_vault.ui.utils.web_title import TitleResult, WebTitleResolver
+
 
 STATUSES = ["reading", "paused", "completed", "dropped"]
 
@@ -39,38 +47,33 @@ class EditorPage(QWidget):
         self.on_saved = on_saved
         self._selected_id: Optional[int] = None
 
-        # Web title resolver (browser-like, async)
+        self._cover_db_path: Optional[str] = None
+        self._cover_source_path: Optional[str] = None
+        self._cover_fetched_image: Optional[QImage] = None
+        self._cover_removed = False
+
         self._title_resolver = WebTitleResolver(self)
+        self._cover_resolver = WebCoverResolver(self)
+        self._remote_image_loader = RemoteImageLoader(self)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
         root.setSpacing(14)
 
-        # ===== Top bar =====
         root.addWidget(self._build_top_bar())
 
-        # ===== Header =====
         self.header = QLabel("Add Comic")
         self.header.setObjectName("H1")
         root.addWidget(self.header)
 
-        # ===== Cover block =====
         root.addLayout(self._build_cover_block())
-
-        # ===== Form =====
         root.addWidget(self._build_form())
-
-        # ===== Actions =====
         root.addLayout(self._build_actions())
 
-        # ===== Status line =====
         self.fetch_status = QLabel("")
         self.fetch_status.setObjectName("Muted")
         root.addWidget(self.fetch_status)
 
-    # ---------------------------------------------------------------------
-    # UI builders
-    # ---------------------------------------------------------------------
     def _build_top_bar(self) -> QWidget:
         top_host = QWidget()
         top_host.setObjectName("TopBar")
@@ -108,24 +111,29 @@ class EditorPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(8)
 
-        lbl = QLabel("Cover Image")
-        lbl.setObjectName("H2")
+        label = QLabel("Cover Image")
+        label.setObjectName("H2")
 
         self.cover_path = QLineEdit()
         self.cover_path.setObjectName("CoverPath")
         self.cover_path.setReadOnly(True)
 
-        btn_pick = QPushButton("Choose Image…")
+        btn_pick = QPushButton("Choose Image...")
         btn_pick.setObjectName("Ghost")
         btn_pick.clicked.connect(self.pick_image)
+
+        self.btn_link = QPushButton("Load from Link...")
+        self.btn_link.setObjectName("Ghost")
+        self.btn_link.clicked.connect(self.load_cover_from_link)
 
         btn_clear = QPushButton("Clear Image")
         btn_clear.setObjectName("Ghost")
         btn_clear.clicked.connect(self.clear_image)
 
-        right.addWidget(lbl)
+        right.addWidget(label)
         right.addWidget(self.cover_path)
         right.addWidget(btn_pick)
+        right.addWidget(self.btn_link)
         right.addWidget(btn_clear)
         right.addStretch(1)
 
@@ -141,8 +149,6 @@ class EditorPage(QWidget):
 
         self.title_input = QLineEdit()
         self.source_input = QLineEdit()
-
-        # URL row + actions
         self.url_input = QLineEdit()
 
         url_row = QWidget()
@@ -158,14 +164,24 @@ class EditorPage(QWidget):
         self.btn_open.setObjectName("Ghost")
         self.btn_open.clicked.connect(self.open_url)
 
+        self.btn_open_private = QPushButton("Private")
+        self.btn_open_private.setObjectName("Ghost")
+        self.btn_open_private.clicked.connect(self.open_url_private)
+
         self.btn_fetch = QPushButton("Fetch Title")
         self.btn_fetch.setObjectName("Ghost")
         self.btn_fetch.clicked.connect(self.fetch_title)
 
+        self.btn_fetch_cover = QPushButton("Fetch Cover")
+        self.btn_fetch_cover.setObjectName("Ghost")
+        self.btn_fetch_cover.clicked.connect(self.fetch_cover)
+
         url_layout.addWidget(self.url_input, 1)
         url_layout.addWidget(self.btn_paste)
         url_layout.addWidget(self.btn_open)
+        url_layout.addWidget(self.btn_open_private)
         url_layout.addWidget(self.btn_fetch)
+        url_layout.addWidget(self.btn_fetch_cover)
 
         self.status_input = QComboBox()
         self.status_input.addItems(STATUSES)
@@ -207,9 +223,6 @@ class EditorPage(QWidget):
         row.addWidget(self.btn_save)
         return row
 
-    # ---------------------------------------------------------------------
-    # Public API used by MainWindow
-    # ---------------------------------------------------------------------
     def load_series(self, series_id: Optional[int]) -> None:
         self._selected_id = series_id
         self.fetch_status.setText("")
@@ -220,32 +233,32 @@ class EditorPage(QWidget):
             return
 
         with get_session() as session:
-            s = session.get(Series, series_id)
+            series = session.get(Series, series_id)
 
-        if not s:
+        if not series:
             self.header.setText("Add Comic")
             self._reset_form()
             return
 
         self.header.setText("Edit Comic")
-        self.title_input.setText(s.title or "")
-        self.source_input.setText(s.source or "")
-        self.url_input.setText(s.url or "")
-        self.status_input.setCurrentText(s.status if s.status in STATUSES else "reading")
-        self.rating_input.setValue(int(s.rating or 0))
-        self.current_chapter_input.setText(s.current_chapter or "")
-        self.current_url_input.setText(s.current_url or "")
-        self.notes_input.setPlainText(s.notes or "")
+        self.title_input.setText(series.title or "")
+        self.source_input.setText(series.source or "")
+        self.url_input.setText(series.url or "")
+        self.status_input.setCurrentText(series.status if series.status in STATUSES else "reading")
+        self.rating_input.setValue(int(series.rating or 0))
+        self.current_chapter_input.setText(series.current_chapter or "")
+        self.current_url_input.setText(series.current_url or "")
+        self.notes_input.setPlainText(series.notes or "")
 
-        self.cover_path.setText(s.cover_path or "")
-        self._render_preview(s.cover_path)
+        self._cover_db_path = series.cover_path
+        self._cover_source_path = None
+        self._cover_fetched_image = None
+        self._cover_removed = False
+        self._set_cover_display(series.cover_path)
 
     def set_url(self, url: str) -> None:
         self.url_input.setText((url or "").strip())
 
-    # ---------------------------------------------------------------------
-    # Cover
-    # ---------------------------------------------------------------------
     def pick_image(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -255,27 +268,40 @@ class EditorPage(QWidget):
         )
         if not file_path:
             return
+
+        self._cover_source_path = file_path
+        self._cover_fetched_image = None
+        self._cover_removed = False
         self.cover_path.setText(file_path)
         self._render_preview(file_path)
 
     def clear_image(self) -> None:
+        self._cover_source_path = None
+        self._cover_fetched_image = None
+        self._cover_removed = True
         self.cover_path.clear()
         self.preview.setPixmap(QPixmap())
         self.preview.setText("No Image")
 
+    def _set_cover_display(self, stored_path: Optional[str]) -> None:
+        resolved = resolve_app_path(stored_path)
+        self.cover_path.setText("" if resolved is None else str(resolved))
+        self._render_preview(stored_path)
+
     def _render_preview(self, path: Optional[str]) -> None:
-        if not path:
+        resolved = resolve_app_path(path)
+        if resolved is None:
             self.preview.setPixmap(QPixmap())
             self.preview.setText("No Image")
             return
 
-        p = Path(path)
-        if not p.exists():
+        file_path = Path(resolved)
+        if not file_path.exists():
             self.preview.setPixmap(QPixmap())
             self.preview.setText("No Image")
             return
 
-        pix = QPixmap(str(p))
+        pix = QPixmap(str(file_path))
         if pix.isNull():
             self.preview.setPixmap(QPixmap())
             self.preview.setText("No Image")
@@ -286,22 +312,126 @@ class EditorPage(QWidget):
         )
         self.preview.setText("")
 
-    # ---------------------------------------------------------------------
-    # URL actions (G2)
-    # ---------------------------------------------------------------------
     def paste_url(self) -> None:
-        txt = (QApplication.clipboard().text() or "").strip()
-        if not txt:
+        text = (QApplication.clipboard().text() or "").strip()
+        if not text:
             QMessageBox.information(self, "Clipboard", "Clipboard is empty.")
             return
-        self.url_input.setText(txt)
+        self.url_input.setText(text)
 
     def open_url(self) -> None:
         url = (self.url_input.text() or "").strip()
         if not url:
             QMessageBox.information(self, "Open URL", "URL is empty.")
             return
-        webbrowser.open(url)
+        if not open_url(url):
+            QMessageBox.warning(self, "Open URL", "Could not open the browser.")
+
+    def open_url_private(self) -> None:
+        url = (self.url_input.text() or "").strip()
+        if not url:
+            QMessageBox.information(self, "Open Private", "URL is empty.")
+            return
+        ok, error = open_url_private(url)
+        if not ok:
+            QMessageBox.warning(self, "Open Private", error)
+
+    def fetch_cover(self) -> None:
+        url = (self.url_input.text() or "").strip()
+        if not url:
+            QMessageBox.information(self, "Fetch Cover", "URL is empty.")
+            return
+
+        has_existing_cover = bool(self._cover_source_path or self._cover_fetched_image or self._cover_db_path) and not self._cover_removed
+        if has_existing_cover:
+            resp = QMessageBox.question(
+                self,
+                "Fetch Cover",
+                "Overwrite the current cover preview?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if resp != QMessageBox.Yes:
+                return
+
+        self._set_fetch_ui(True)
+        self.fetch_status.setText("Fetching cover...")
+
+        def done(result: CoverResult) -> None:
+            self._set_fetch_ui(False)
+
+            if not result.ok:
+                self.fetch_status.setText("")
+                QMessageBox.critical(self, "Fetch Cover failed", result.error or "Unknown error")
+                return
+
+            image = QImage()
+            if not image.loadFromData(result.image_data):
+                self.fetch_status.setText("")
+                QMessageBox.critical(self, "Fetch Cover failed", "Downloaded file is not a valid image.")
+                return
+
+            if result.final_url and result.final_url != url:
+                self.url_input.setText(result.final_url)
+
+            self._apply_remote_cover(image, result.image_url or "Fetched cover")
+            self.fetch_status.setText("Cover fetched")
+
+        self._cover_resolver.resolve(url, done, timeout_ms=18000)
+
+    def load_cover_from_link(self) -> None:
+        current_value = self.cover_path.text() if self.cover_path.text().startswith(("http://", "https://")) else ""
+        image_url, ok = QInputDialog.getText(self, "Load Cover from Link", "Image URL:", text=current_value)
+        if not ok:
+            return
+
+        image_url = image_url.strip()
+        if not image_url:
+            return
+
+        try:
+            normalized_url = normalize_url(image_url)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Load Cover from Link", str(exc))
+            return
+
+        has_existing_cover = bool(self._cover_source_path or self._cover_fetched_image or self._cover_db_path) and not self._cover_removed
+        if has_existing_cover:
+            resp = QMessageBox.question(
+                self,
+                "Load Cover from Link",
+                "Overwrite the current cover preview?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if resp != QMessageBox.Yes:
+                return
+
+        self._set_fetch_ui(True)
+        self.fetch_status.setText("Downloading cover from link...")
+
+        def done(result: RemoteImageResult) -> None:
+            self._set_fetch_ui(False)
+
+            if not result.ok:
+                self.fetch_status.setText("")
+                QMessageBox.critical(self, "Load Cover from Link failed", result.error or "Unknown error")
+                return
+
+            image = QImage()
+            if not image.loadFromData(result.image_data):
+                self.fetch_status.setText("")
+                QMessageBox.critical(
+                    self,
+                    "Load Cover from Link failed",
+                    "Downloaded file is not a valid image.",
+                )
+                return
+
+            self._apply_remote_cover(image, result.image_url or normalized_url or image_url)
+            self.fetch_status.setText("Cover loaded")
+
+        self._remote_image_loader.download(normalized_url or image_url, done, timeout_ms=15000)
 
     def fetch_title(self) -> None:
         url = (self.url_input.text() or "").strip()
@@ -310,75 +440,108 @@ class EditorPage(QWidget):
             return
 
         self._set_fetch_ui(True)
-        self.fetch_status.setText("Fetching title…")
+        self.fetch_status.setText("Fetching title...")
 
-        def done(res: TitleResult) -> None:
-            # callback runs in GUI thread (QtWebEngine)
+        def done(result: TitleResult) -> None:
             self._set_fetch_ui(False)
 
-            if not res.ok:
+            if not result.ok:
                 self.fetch_status.setText("")
-                QMessageBox.critical(self, "Fetch Title failed", res.error or "Unknown error")
+                QMessageBox.critical(self, "Fetch Title failed", result.error or "Unknown error")
                 return
 
-            # if redirected, update URL
-            if res.final_url and res.final_url != url:
-                self.url_input.setText(res.final_url)
+            if result.final_url and result.final_url != url:
+                self.url_input.setText(result.final_url)
 
             current = (self.title_input.text() or "").strip()
             if not current:
-                self.title_input.setText(res.title)
-                self.fetch_status.setText("Fetched ✅")
-            else:
-                resp = QMessageBox.question(
-                    self,
-                    "Fetch Title",
-                    "Overwrite current title?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if resp == QMessageBox.Yes:
-                    self.title_input.setText(res.title)
-                self.fetch_status.setText("Fetched ✅")
+                self.title_input.setText(result.title)
+                self.fetch_status.setText("Fetched")
+                return
+
+            resp = QMessageBox.question(
+                self,
+                "Fetch Title",
+                "Overwrite current title?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if resp == QMessageBox.Yes:
+                self.title_input.setText(result.title)
+            self.fetch_status.setText("Fetched")
 
         self._title_resolver.resolve(url, done, timeout_ms=15000)
 
     def _set_fetch_ui(self, fetching: bool) -> None:
-        # prevent spam clicks during fetch
         self.btn_fetch.setEnabled(not fetching)
+        self.btn_fetch_cover.setEnabled(not fetching)
+        self.btn_link.setEnabled(not fetching)
         self.btn_paste.setEnabled(not fetching)
         self.btn_open.setEnabled(not fetching)
+        self.btn_open_private.setEnabled(not fetching)
 
-    # ---------------------------------------------------------------------
-    # Save
-    # ---------------------------------------------------------------------
+    def _render_preview_image(self, image: QImage) -> None:
+        pix = QPixmap.fromImage(image)
+        if pix.isNull():
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("No Image")
+            return
+
+        self.preview.setPixmap(
+            pix.scaled(self.preview.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        )
+        self.preview.setText("")
+
+    def _apply_remote_cover(self, image: QImage, label: str) -> None:
+        self._cover_source_path = None
+        self._cover_fetched_image = image
+        self._cover_removed = False
+        self.cover_path.setText(label)
+        self._render_preview_image(image)
+
     def on_save(self) -> None:
         title = (self.title_input.text() or "").strip()
         if not title:
             QMessageBox.warning(self, "Validation", "Title is required.")
             return
 
-        source = (self.source_input.text() or "").strip() or None
-        url = (self.url_input.text() or "").strip() or None
-        status = self.status_input.currentText()
+        try:
+            url = normalize_url(self.url_input.text())
+            current_url = normalize_url(self.current_url_input.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Validation", str(exc))
+            return
 
+        source = (self.source_input.text() or "").strip() or None
+        status = self.status_input.currentText()
         rating_raw = int(self.rating_input.value())
         rating = None if rating_raw == 0 else rating_raw
-
         current_chapter = (self.current_chapter_input.text() or "").strip() or None
-        current_url = (self.current_url_input.text() or "").strip() or None
         notes = (self.notes_input.toPlainText() or "").strip() or None
-
-        cover_path = (self.cover_path.text() or "").strip() or None
         now = datetime.utcnow()
 
         with get_session() as session:
+            duplicate = None
+            if url:
+                duplicate = session.exec(select(Series).where(Series.url == url)).first()
+
+            if duplicate and duplicate.id != self._selected_id:
+                resp = QMessageBox.question(
+                    self,
+                    "Duplicate URL",
+                    "Another comic already uses this URL. Save anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if resp != QMessageBox.Yes:
+                    return
+
             if self._selected_id is None:
-                s = Series(
+                series = Series(
                     title=title,
                     source=source,
                     url=url,
-                    cover_path=cover_path,
+                    cover_path=None,
                     status=status,
                     rating=rating,
                     current_chapter=current_chapter,
@@ -387,25 +550,70 @@ class EditorPage(QWidget):
                     created_at=now,
                     updated_at=now,
                 )
-                session.add(s)
+                session.add(series)
                 session.commit()
+                session.refresh(series)
+                old_cover_path = None
             else:
-                s = session.get(Series, self._selected_id)
-                if not s:
+                series = session.get(Series, self._selected_id)
+                if not series:
                     QMessageBox.warning(self, "Error", "Selected record no longer exists.")
                     return
-                s.title = title
-                s.source = source
-                s.url = url
-                s.cover_path = cover_path
-                s.status = status
-                s.rating = rating
-                s.current_chapter = current_chapter
-                s.current_url = current_url
-                s.notes = notes
-                s.updated_at = now
-                session.add(s)
+
+                old_cover_path = series.cover_path
+                series.title = title
+                series.source = source
+                series.url = url
+                series.status = status
+                series.rating = rating
+                series.current_chapter = current_chapter
+                series.current_url = current_url
+                series.notes = notes
+                series.updated_at = now
+                session.add(series)
                 session.commit()
+                session.refresh(series)
+
+            new_cover_path = self._cover_db_path
+            delete_after_save = False
+
+            if self._cover_removed:
+                new_cover_path = None
+                delete_after_save = bool(old_cover_path)
+            elif self._cover_fetched_image is not None:
+                try:
+                    new_cover_path = save_cover_image(self._cover_fetched_image, series_id=int(series.id))
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Cover Import",
+                        f"Comic was saved, but the fetched cover could not be imported.\n\n{exc}",
+                    )
+                    new_cover_path = old_cover_path
+                else:
+                    delete_after_save = old_cover_path != new_cover_path
+            elif self._cover_source_path:
+                try:
+                    new_cover_path = import_cover(self._cover_source_path, series_id=int(series.id))
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Cover Import",
+                        f"Comic was saved, but the cover could not be imported.\n\n{exc}",
+                    )
+                    new_cover_path = old_cover_path
+                else:
+                    delete_after_save = old_cover_path != new_cover_path
+
+            series.cover_path = new_cover_path
+            series.updated_at = now
+            session.add(series)
+            session.commit()
+
+        if delete_after_save and old_cover_path and old_cover_path != new_cover_path:
+            delete_managed_cover(old_cover_path)
+        elif self._cover_removed and old_cover_path:
+            delete_managed_cover(old_cover_path)
 
         self.on_saved()
 
@@ -418,5 +626,11 @@ class EditorPage(QWidget):
         self.current_chapter_input.clear()
         self.current_url_input.clear()
         self.notes_input.clear()
+        self.fetch_status.setText("")
+
+        self._cover_db_path = None
+        self._cover_source_path = None
+        self._cover_fetched_image = None
+        self._cover_removed = False
         self.cover_path.clear()
         self._render_preview(None)
