@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtWidgets import QMainWindow, QStackedWidget
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
 
 from comic_vault.data.db import init_db
+from comic_vault.data.integrity import format_integrity_report, run_integrity_check
+from comic_vault.data.storage import get_backups_dir, get_data_dir
 from comic_vault.ui.pages.library_page import LibraryPage
 from comic_vault.ui.pages.editor_page import EditorPage
 
@@ -15,7 +18,22 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Comic Vault")
         self.resize(1200, 750)
 
-        init_db()
+        self._integrity_report = None
+
+        try:
+            init_db()
+            self._integrity_report = run_integrity_check()
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Startup Error",
+                (
+                    f"The library could not be initialized.\n\n{exc}\n\n"
+                    f"Data folder:\n{get_data_dir()}\n\n"
+                    f"Backups folder:\n{get_backups_dir()}"
+                ),
+            )
+            raise
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -35,6 +53,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.editor_page)
 
         self.go_library()
+        QTimer.singleShot(0, self._show_integrity_notice)
 
     def go_library(self) -> None:
         self.stack.setCurrentWidget(self.library_page)
@@ -59,3 +78,12 @@ class MainWindow(QMainWindow):
     def go_edit(self, series_id: int) -> None:
         self.editor_page.load_series(series_id)
         self.stack.setCurrentWidget(self.editor_page)
+
+    def _show_integrity_notice(self) -> None:
+        if not self._integrity_report or not self._integrity_report.has_issues:
+            return
+        QMessageBox.warning(
+            self,
+            "Library Integrity Check",
+            format_integrity_report(self._integrity_report),
+        )

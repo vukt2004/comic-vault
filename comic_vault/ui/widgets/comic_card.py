@@ -22,6 +22,9 @@ class ComicCard(QFrame):
         rating_10: Optional[int],
         on_open: Callable[[], None],
         on_open_private: Callable[[], None],
+        on_resume: Callable[[], None],
+        on_quick_increment: Callable[[], None],
+        on_quick_edit: Callable[[], None],
         on_edit: Callable[[], None],
         on_delete: Callable[[], None],
         parent: QWidget | None = None,
@@ -84,7 +87,7 @@ class ComicCard(QFrame):
         info = QWidget()
         info_layout = QVBoxLayout(info)
         info_layout.setContentsMargins(14, 12, 14, 12)
-        info_layout.setSpacing(6)
+        info_layout.setSpacing(8)
 
         title_label = QLabel(title)
         title_label.setObjectName("H2")
@@ -106,11 +109,33 @@ class ComicCard(QFrame):
         stars_label = QLabel(self._rating_to_stars(rating_10))
         stars_label.setObjectName("Stars")
 
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 4, 0, 0)
+        actions_layout.setSpacing(8)
+
+        resume_btn = QPushButton("Resume")
+        resume_btn.setObjectName("Primary")
+        resume_btn.clicked.connect(lambda _=False: on_resume())
+
+        plus_btn = QPushButton("+1")
+        plus_btn.setObjectName("Ghost")
+        plus_btn.clicked.connect(lambda _=False: on_quick_increment())
+
+        quick_btn = QPushButton("Quick")
+        quick_btn.setObjectName("Ghost")
+        quick_btn.clicked.connect(lambda _=False: on_quick_edit())
+
+        actions_layout.addWidget(resume_btn, 1)
+        actions_layout.addWidget(plus_btn)
+        actions_layout.addWidget(quick_btn)
+
         info_layout.addWidget(title_label)
         info_layout.addWidget(subtitle_label)
         info_layout.addWidget(chapter_label)
         info_layout.addWidget(notes_label)
         info_layout.addWidget(stars_label)
+        info_layout.addWidget(actions)
 
         outer.addWidget(self.cover)
         outer.addWidget(info)

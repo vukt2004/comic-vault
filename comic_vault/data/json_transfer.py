@@ -11,16 +11,22 @@ from comic_vault.data.backup import create_backup_archive, make_backup_name
 from comic_vault.data.db import CURRENT_SCHEMA_VERSION, get_session
 from comic_vault.data.models import Series
 from comic_vault.data.storage import ensure_data_dirs, get_backups_dir, get_exports_dir, resolve_app_path
-from comic_vault.data.validation import normalize_url
-
-
-VALID_STATUSES = {"reading", "paused", "completed", "dropped"}
+from comic_vault.data.validation import (
+    build_dedupe_key,
+    normalize_optional_text,
+    normalize_rating,
+    normalize_status,
+    normalize_url,
+)
 
 
 @dataclass(frozen=True)
 class JsonImportResult:
     imported_count: int
     skipped_count: int
+    duplicate_count: int = 0
+    invalid_count: int = 0
+    missing_cover_count: int = 0
     backup_path: Path | None = None
 
 
@@ -56,7 +62,7 @@ def import_library_json(source: str | Path, *, overwrite: bool = True) -> JsonIm
     if not isinstance(rows, list):
         raise ValueError("Invalid JSON export format: missing 'series' list.")
 
-    prepared_rows, skipped = _prepare_import_rows(rows)
+    prepared_rows, stats = _prepare_import_rows(rows)
 
     backup_path: Path | None = None
     if overwrite:
@@ -74,7 +80,10 @@ def import_library_json(source: str | Path, *, overwrite: bool = True) -> JsonIm
 
     return JsonImportResult(
         imported_count=len(prepared_rows),
-        skipped_count=skipped,
+        skipped_count=stats["skipped"],
+        duplicate_count=stats["duplicates"],
+        invalid_count=stats["invalid"],
+        missing_cover_count=stats["missing_covers"],
         backup_path=backup_path,
     )
 
@@ -100,54 +109,52 @@ def _serialize_series(series: Series) -> dict[str, object]:
     }
 
 
-def _prepare_import_rows(rows: list[object]) -> tuple[list[dict[str, object]], int]:
+def _prepare_import_rows(rows: list[object]) -> tuple[list[dict[str, object]], dict[str, int]]:
     prepared: list[dict[str, object]] = []
     seen_keys: set[tuple[str, str]] = set()
-    skipped = 0
+    stats = {
+        "skipped": 0,
+        "duplicates": 0,
+        "invalid": 0,
+        "missing_covers": 0,
+    }
 
     for item in rows:
         if not isinstance(item, dict):
-            skipped += 1
+            stats["skipped"] += 1
+            stats["invalid"] += 1
             continue
 
         title = str(item.get("title") or "").strip()
         if not title:
-            skipped += 1
+            stats["skipped"] += 1
+            stats["invalid"] += 1
             continue
 
         try:
             url = normalize_url(item.get("url"))
             current_url = normalize_url(item.get("current_url"))
         except ValueError:
-            skipped += 1
+            stats["skipped"] += 1
+            stats["invalid"] += 1
             continue
 
-        source = _to_optional_text(item.get("source"))
-        dedupe_key = (
-            (url or "").lower(),
-            f"{title.lower()}|{(source or '').lower()}",
-        )
+        source = normalize_optional_text(item.get("source"))
+        dedupe_key = build_dedupe_key(title, source, url)
         if dedupe_key in seen_keys:
-            skipped += 1
+            stats["skipped"] += 1
+            stats["duplicates"] += 1
             continue
         seen_keys.add(dedupe_key)
 
-        status = _to_optional_text(item.get("status")) or "reading"
-        if status not in VALID_STATUSES:
-            status = "reading"
+        status = normalize_status(item.get("status"))
+        rating_value = normalize_rating(item.get("rating"))
 
-        rating = item.get("rating")
-        try:
-            rating_value = int(rating) if rating is not None else None
-        except (TypeError, ValueError):
-            rating_value = None
-        if rating_value is not None and not 1 <= rating_value <= 10:
-            rating_value = None
-
-        cover_path = _to_optional_text(item.get("cover_path"))
+        cover_path = normalize_optional_text(item.get("cover_path"))
         resolved_cover = resolve_app_path(cover_path)
         if cover_path and (resolved_cover is None or not resolved_cover.exists()):
             cover_path = None
+            stats["missing_covers"] += 1
 
         created_at = _parse_datetime(item.get("created_at"))
         updated_at = _parse_datetime(item.get("updated_at")) or created_at
@@ -160,20 +167,15 @@ def _prepare_import_rows(rows: list[object]) -> tuple[list[dict[str, object]], i
                 "cover_path": cover_path,
                 "status": status,
                 "rating": rating_value,
-                "notes": _to_optional_text(item.get("notes")),
-                "current_chapter": _to_optional_text(item.get("current_chapter")),
+                "notes": normalize_optional_text(item.get("notes")),
+                "current_chapter": normalize_optional_text(item.get("current_chapter")),
                 "current_url": current_url,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
         )
 
-    return prepared, skipped
-
-
-def _to_optional_text(value: object) -> str | None:
-    text = str(value or "").strip()
-    return text or None
+    return prepared, stats
 
 
 def _parse_datetime(value: object) -> datetime:

@@ -5,3 +5,4 @@
 *.pyd
 *.db
 .DS_Store
+.comic_vault_data/

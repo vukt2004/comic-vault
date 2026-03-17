@@ -8,17 +8,16 @@ from pathlib import Path
 
 APP_DIR_NAME = "ComicVault"
 LEGACY_DB_PATH = Path(__file__).resolve().parent / "comic_vault.db"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+_RESOLVED_DATA_DIR: Path | None = None
 
 
 def get_data_dir() -> Path:
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-        if base:
-            return Path(base) / APP_DIR_NAME
-    elif sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME
-
-    return Path.home() / ".local" / "share" / APP_DIR_NAME
+    global _RESOLVED_DATA_DIR
+    if _RESOLVED_DATA_DIR is None:
+        _RESOLVED_DATA_DIR = _resolve_data_dir()
+    return _RESOLVED_DATA_DIR
 
 
 def get_db_path() -> Path:
@@ -63,3 +62,43 @@ def resolve_app_path(value: str | None) -> Path | None:
         return path
 
     return get_data_dir() / path
+
+
+def reset_data_dir_cache() -> None:
+    global _RESOLVED_DATA_DIR
+    _RESOLVED_DATA_DIR = None
+
+
+def _resolve_data_dir() -> Path:
+    override = os.environ.get("COMIC_VAULT_DATA_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    preferred = _get_os_data_dir()
+    if _is_writable_directory(preferred):
+        return preferred
+
+    return (PROJECT_ROOT / ".comic_vault_data").resolve()
+
+
+def _get_os_data_dir() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / APP_DIR_NAME
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME
+
+    return Path.home() / ".local" / "share" / APP_DIR_NAME
+
+
+def _is_writable_directory(path: Path) -> bool:
+    probe_dir = path
+    probe_file = probe_dir / ".write_test"
+    try:
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_file.write_text("ok", encoding="utf-8")
+        probe_file.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False

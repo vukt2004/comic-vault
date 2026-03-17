@@ -28,7 +28,7 @@ from comic_vault.data.covers import delete_managed_cover, import_cover, save_cov
 from comic_vault.data.db import get_session
 from comic_vault.data.models import Series
 from comic_vault.data.storage import resolve_app_path
-from comic_vault.data.validation import normalize_url
+from comic_vault.data.validation import build_dedupe_key, normalize_rating, normalize_status, normalize_url
 from comic_vault.ui.utils.browser import open_url, open_url_private
 from comic_vault.ui.utils.remote_image import RemoteImageLoader, RemoteImageResult
 from comic_vault.ui.utils.web_cover import CoverResult, WebCoverResolver
@@ -513,23 +513,29 @@ class EditorPage(QWidget):
             return
 
         source = (self.source_input.text() or "").strip() or None
-        status = self.status_input.currentText()
+        status = normalize_status(self.status_input.currentText())
         rating_raw = int(self.rating_input.value())
-        rating = None if rating_raw == 0 else rating_raw
+        rating = normalize_rating(rating_raw)
         current_chapter = (self.current_chapter_input.text() or "").strip() or None
         notes = (self.notes_input.toPlainText() or "").strip() or None
         now = datetime.utcnow()
 
         with get_session() as session:
             duplicate = None
-            if url:
-                duplicate = session.exec(select(Series).where(Series.url == url)).first()
+            dedupe_key = build_dedupe_key(title, source, url)
+            for candidate in session.exec(select(Series)).all():
+                if candidate.id == self._selected_id:
+                    continue
+                candidate_key = build_dedupe_key(candidate.title, candidate.source, candidate.url)
+                if candidate_key == dedupe_key:
+                    duplicate = candidate
+                    break
 
             if duplicate and duplicate.id != self._selected_id:
                 resp = QMessageBox.question(
                     self,
-                    "Duplicate URL",
-                    "Another comic already uses this URL. Save anyway?",
+                    "Duplicate Comic",
+                    "A similar comic already exists in the library. Save anyway?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )

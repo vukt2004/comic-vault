@@ -172,10 +172,11 @@ def build_qss(t: Theme) -> str:
     QPushButton#OverlayBtn {{
         background: {t.surface};
         border: 1px solid {t.border};
-        border-radius: 18px;
-        min-width: 44px;
-        min-height: 44px;
-        font-size: 16px;
+        border-radius: 14px;
+        min-width: 54px;
+        min-height: 40px;
+        font-size: 12px;
+        font-weight: 700;
     }}
     QPushButton#OverlayBtn:hover {{
         border: 1px solid {t.primary_2};
@@ -184,10 +185,10 @@ def build_qss(t: Theme) -> str:
         background: {t.surface};
         border: 1px solid {t.danger};
         color: {t.danger};
-        border-radius: 18px;
-        min-width: 44px;
-        min-height: 44px;
-        font-size: 16px;
+        border-radius: 14px;
+        min-width: 54px;
+        min-height: 40px;
+        font-size: 12px;
         font-weight: 700;
     }}
     QLabel#Stars {{
