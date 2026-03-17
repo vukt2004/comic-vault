@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -57,8 +58,8 @@ class EditorPage(QWidget):
         self._remote_image_loader = RemoteImageLoader(self)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(14)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(16)
 
         root.addWidget(self._build_top_bar())
 
@@ -79,55 +80,52 @@ class EditorPage(QWidget):
         top_host.setObjectName("TopBar")
 
         top = QHBoxLayout(top_host)
-        top.setContentsMargins(14, 10, 14, 10)
-        top.setSpacing(10)
+        top.setContentsMargins(16, 12, 16, 12)
+        top.setSpacing(12)
 
         title = QLabel("Comic Vault")
         title.setObjectName("TopTitle")
 
-        btn_library = QPushButton("Library")
+        btn_library = QPushButton("← Library")
         btn_library.setObjectName("Primary")
         btn_library.clicked.connect(self.on_back)
-
-        btn_add = QPushButton("Add Comic")
-        btn_add.setObjectName("Ghost")
-        btn_add.setEnabled(False)
 
         top.addWidget(title)
         top.addStretch(1)
         top.addWidget(btn_library)
-        top.addWidget(btn_add)
         return top_host
 
     def _build_cover_block(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(14)
+        row.setSpacing(20)
 
         self.preview = QLabel("No Image")
         self.preview.setObjectName("CoverPreview")
         self.preview.setFixedSize(240, 330)
         self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("border: 2px dashed rgba(167, 139, 250, 0.4); border-radius: 14px;")
 
         right = QVBoxLayout()
-        right.setSpacing(8)
+        right.setSpacing(10)
 
-        label = QLabel("Cover Image")
+        label = QLabel("📸 Cover Image")
         label.setObjectName("H2")
 
         self.cover_path = QLineEdit()
         self.cover_path.setObjectName("CoverPath")
         self.cover_path.setReadOnly(True)
+        self.cover_path.setPlaceholderText("No image selected")
 
-        btn_pick = QPushButton("Choose Image...")
-        btn_pick.setObjectName("Ghost")
+        btn_pick = QPushButton("📁 Choose Image...")
+        btn_pick.setObjectName("Primary")
         btn_pick.clicked.connect(self.pick_image)
 
-        self.btn_link = QPushButton("Load from Link...")
+        self.btn_link = QPushButton("🔗 Load from Link...")
         self.btn_link.setObjectName("Ghost")
         self.btn_link.clicked.connect(self.load_cover_from_link)
 
-        btn_clear = QPushButton("Clear Image")
-        btn_clear.setObjectName("Ghost")
+        btn_clear = QPushButton("✕ Clear Image")
+        btn_clear.setObjectName("Danger")
         btn_clear.clicked.connect(self.clear_image)
 
         right.addWidget(label)
@@ -143,37 +141,75 @@ class EditorPage(QWidget):
 
     def _build_form(self) -> QWidget:
         host = QWidget()
-        form = QFormLayout(host)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(10)
+        grid = QGridLayout(host)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        grid.setContentsMargins(4, 4, 4, 4)
 
+        # Main Info Section
         self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("E.g., My Favorite Manga")
+        
         self.source_input = QLineEdit()
-        self.url_input = QLineEdit()
+        self.source_input.setPlaceholderText("E.g., Mangadex, WebNovel")
 
+        self.status_input = QComboBox()
+        self.status_input.addItems(STATUSES)
+
+        self.rating_input = QSpinBox()
+        self.rating_input.setRange(0, 10)
+        self.rating_input.setSpecialValueText("None")
+        self.rating_input.setValue(0)
+
+        # Row 0: Title | Status
+        grid.addWidget(QLabel("📚 Title *"), 0, 0)
+        grid.addWidget(self.title_input, 0, 1)
+        grid.addWidget(QLabel("📊 Status"), 0, 2)
+        grid.addWidget(self.status_input, 0, 3)
+
+        # Row 1: Source | Rating
+        grid.addWidget(QLabel("🏷️ Source"), 1, 0)
+        grid.addWidget(self.source_input, 1, 1)
+        grid.addWidget(QLabel("⭐ Rating"), 1, 2)
+        grid.addWidget(self.rating_input, 1, 3)
+
+        # Row 2: URL (full width with action buttons)
         url_row = QWidget()
         url_layout = QHBoxLayout(url_row)
         url_layout.setContentsMargins(0, 0, 0, 0)
         url_layout.setSpacing(8)
 
-        self.btn_paste = QPushButton("Paste")
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://example.com")
+
+        self.btn_paste = QPushButton("📋")
         self.btn_paste.setObjectName("Ghost")
+        self.btn_paste.setToolTip("Paste URL from clipboard")
+        self.btn_paste.setMaximumWidth(40)
         self.btn_paste.clicked.connect(self.paste_url)
 
-        self.btn_open = QPushButton("Open")
+        self.btn_open = QPushButton("🌐")
         self.btn_open.setObjectName("Ghost")
+        self.btn_open.setToolTip("Open in browser")
+        self.btn_open.setMaximumWidth(40)
         self.btn_open.clicked.connect(self.open_url)
 
-        self.btn_open_private = QPushButton("Private")
+        self.btn_open_private = QPushButton("🔒")
         self.btn_open_private.setObjectName("Ghost")
+        self.btn_open_private.setToolTip("Open in private window")
+        self.btn_open_private.setMaximumWidth(40)
         self.btn_open_private.clicked.connect(self.open_url_private)
 
-        self.btn_fetch = QPushButton("Fetch Title")
+        self.btn_fetch = QPushButton("🏷️")
         self.btn_fetch.setObjectName("Ghost")
+        self.btn_fetch.setToolTip("Fetch title from webpage")
+        self.btn_fetch.setMaximumWidth(40)
         self.btn_fetch.clicked.connect(self.fetch_title)
 
-        self.btn_fetch_cover = QPushButton("Fetch Cover")
+        self.btn_fetch_cover = QPushButton("🎨")
         self.btn_fetch_cover.setObjectName("Ghost")
+        self.btn_fetch_cover.setToolTip("Fetch cover image from webpage")
+        self.btn_fetch_cover.setMaximumWidth(40)
         self.btn_fetch_cover.clicked.connect(self.fetch_cover)
 
         url_layout.addWidget(self.url_input, 1)
@@ -183,41 +219,52 @@ class EditorPage(QWidget):
         url_layout.addWidget(self.btn_fetch)
         url_layout.addWidget(self.btn_fetch_cover)
 
-        self.status_input = QComboBox()
-        self.status_input.addItems(STATUSES)
+        grid.addWidget(QLabel("🔗 URL"), 2, 0)
+        grid.addWidget(url_row, 2, 1, 1, 3)
 
-        self.rating_input = QSpinBox()
-        self.rating_input.setRange(0, 10)
-        self.rating_input.setSpecialValueText("None (0)")
-        self.rating_input.setValue(0)
-
+        # Row 3: Current Chapter | Current URL
         self.current_chapter_input = QLineEdit()
-        self.current_url_input = QLineEdit()
-        self.notes_input = QTextEdit()
+        self.current_chapter_input.setPlaceholderText("E.g., 125")
 
-        form.addRow("Title *", self.title_input)
-        form.addRow("Source", self.source_input)
-        form.addRow("URL", url_row)
-        form.addRow("Status", self.status_input)
-        form.addRow("Rating (0=None)", self.rating_input)
-        form.addRow("Current Chapter", self.current_chapter_input)
-        form.addRow("Current URL", self.current_url_input)
-        form.addRow("Notes", self.notes_input)
+        self.current_url_input = QLineEdit()
+        self.current_url_input.setPlaceholderText("https://example.com/chapter/125")
+
+        grid.addWidget(QLabel("📖 Current Chapter"), 3, 0)
+        grid.addWidget(self.current_chapter_input, 3, 1)
+        grid.addWidget(QLabel("🔖 Current URL"), 3, 2)
+        grid.addWidget(self.current_url_input, 3, 3)
+
+        # Row 4: Notes (full width)
+        self.notes_input = QTextEdit()
+        self.notes_input.setPlaceholderText("Add notes about this series...")
+        self.notes_input.setMaximumHeight(100)
+
+        grid.addWidget(QLabel("📝 Notes"), 4, 0)
+        grid.addWidget(self.notes_input, 4, 1, 1, 3)
+
+        # Set column stretch for better layout
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
 
         return host
 
     def _build_actions(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(12)
+        row.setContentsMargins(4, 4, 4, 4)
         row.addStretch(1)
 
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("Ghost")
         self.btn_cancel.clicked.connect(self.on_back)
 
-        self.btn_save = QPushButton("Save")
+        self.btn_save = QPushButton("✓ Save")
         self.btn_save.setObjectName("Primary")
         self.btn_save.clicked.connect(self.on_save)
+
+        row.addWidget(self.btn_cancel)
+        row.addWidget(self.btn_save)
+        return row
 
         row.addWidget(self.btn_cancel)
         row.addWidget(self.btn_save)

@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QVBoxLayout,
     QWidget,
+    QMenu,
 )
+from PySide6.QtCore import Qt
 from sqlmodel import select
 
 from comic_vault.data.backup import create_backup_archive, restore_backup_archive
@@ -70,14 +72,14 @@ class LibraryPage(QWidget):
         self.on_add_from_clipboard = on_add_from_clipboard
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(14)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(16)
 
         top_host = QWidget()
         top_host.setObjectName("TopBar")
         top = QHBoxLayout(top_host)
-        top.setContentsMargins(14, 10, 14, 10)
-        top.setSpacing(10)
+        top.setContentsMargins(16, 12, 16, 12)
+        top.setSpacing(12)
 
         title = QLabel("Comic Vault")
         title.setObjectName("TopTitle")
@@ -85,72 +87,91 @@ class LibraryPage(QWidget):
         top.addWidget(title)
         top.addStretch(1)
 
-        btn_library = QPushButton("Library")
-        btn_library.setEnabled(False)
-        btn_library.setObjectName("Primary")
-
-        btn_paste_add = QPushButton("Paste & Add")
+        btn_paste_add = QPushButton("📋 Paste & Add")
         btn_paste_add.setObjectName("Ghost")
         btn_paste_add.clicked.connect(self._paste_and_add)
 
-        btn_data_dir = QPushButton("Data Folder")
-        btn_data_dir.setObjectName("Ghost")
-        btn_data_dir.clicked.connect(self._open_data_dir)
-
-        btn_backup = QPushButton("Backup")
-        btn_backup.setObjectName("Ghost")
-        btn_backup.clicked.connect(self._create_backup)
-
-        btn_restore = QPushButton("Restore")
-        btn_restore.setObjectName("Ghost")
-        btn_restore.clicked.connect(self._restore_backup)
-
-        btn_export_json = QPushButton("Export JSON")
-        btn_export_json.setObjectName("Ghost")
-        btn_export_json.clicked.connect(self._export_json)
-
-        btn_import_json = QPushButton("Import JSON")
-        btn_import_json.setObjectName("Ghost")
-        btn_import_json.clicked.connect(self._import_json)
-
-        btn_add = QPushButton("Add Comic")
-        btn_add.setObjectName("Ghost")
+        btn_add = QPushButton("✨ Add Comic")
+        btn_add.setObjectName("Primary")
         btn_add.clicked.connect(self.on_add)
 
-        top.addWidget(btn_library)
+        # Create menu button for utility functions
+        btn_menu = QPushButton("⋯")
+        btn_menu.setObjectName("Ghost")
+        btn_menu.setMaximumWidth(40)
+        btn_menu.setToolTip("Utility menu (Backup, Export, etc.)")
+        
+        menu = QMenu(btn_menu)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0F1A2B;
+                color: #E6EDF7;
+                border: 1px solid #20324C;
+                border-radius: 10px;
+                padding: 4px;
+            }
+            QMenu::item:selected {
+                background-color: rgba(123, 58, 237, 0.2);
+            }
+            QMenu::item:pressed {
+                background-color: rgba(123, 58, 237, 0.3);
+            }
+        """)
+        
+        action_data_dir = menu.addAction("📁 Data Folder")
+        action_data_dir.triggered.connect(self._open_data_dir)
+        
+        action_backup = menu.addAction("💾 Backup Library")
+        action_backup.triggered.connect(self._create_backup)
+        
+        action_restore = menu.addAction("↶ Restore Backup")
+        action_restore.triggered.connect(self._restore_backup)
+        
+        menu.addSeparator()
+        
+        action_export = menu.addAction("↓ Export JSON")
+        action_export.triggered.connect(self._export_json)
+        
+        action_import = menu.addAction("↑ Import JSON")
+        action_import.triggered.connect(self._import_json)
+        
+        btn_menu.setMenu(menu)
+
         top.addWidget(btn_paste_add)
-        top.addWidget(btn_data_dir)
-        top.addWidget(btn_backup)
-        top.addWidget(btn_restore)
-        top.addWidget(btn_export_json)
-        top.addWidget(btn_import_json)
         top.addWidget(btn_add)
+        top.addWidget(btn_menu)
 
         root.addWidget(top_host)
 
         header = QHBoxLayout()
-        header.setSpacing(12)
+        header.setSpacing(14)
+        header.setContentsMargins(2, 0, 2, 0)
 
         self.count_label = QLabel("My Library (0 comics)")
         self.count_label.setObjectName("H1")
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search title / source / status ...")
+        self.search.setPlaceholderText("🔍 Search by title, source, or status...")
         self.search.textChanged.connect(self.reload)
+        self.search.setMinimumWidth(250)
 
         self.status_filter = QComboBox()
         for key, label in FILTER_OPTIONS.items():
             self.status_filter.addItem(label, key)
         self.status_filter.currentIndexChanged.connect(self.reload)
+        self.status_filter.setMinimumWidth(140)
 
         self.sort_combo = QComboBox()
         for key, label in SORT_OPTIONS.items():
             self.sort_combo.addItem(label, key)
         self.sort_combo.currentIndexChanged.connect(self.reload)
+        self.sort_combo.setMinimumWidth(140)
 
         header.addWidget(self.count_label)
         header.addStretch(1)
+        header.addWidget(QLabel("Filter:"))
         header.addWidget(self.status_filter)
+        header.addWidget(QLabel("Sort:"))
         header.addWidget(self.sort_combo)
         header.addWidget(self.search)
 
@@ -205,15 +226,17 @@ class LibraryPage(QWidget):
             self.count_label.setText(f"My Library ({len(rows)}/{total_rows} {noun})")
 
         for series in rows:
-            subtitle = f"{(series.source or '')}  •  {(series.status or '')}".strip(" •")
+            subtitle = f"{(series.source or '')}".strip(" •")
             notes = (series.notes or "").strip()
             current_chapter = (series.current_chapter or "").strip()
+            status = (series.status or "reading").lower()
 
             card = ComicCard(
                 title=series.title,
                 subtitle=subtitle,
+                status=status,
                 notes=notes,
-                current_chapter=f"Chapter {current_chapter}" if current_chapter else None,
+                current_chapter=f"{current_chapter}" if current_chapter else None,
                 cover_path=series.cover_path,
                 rating_10=series.rating,
                 on_open=lambda url=series.url: self._open_url(url),
